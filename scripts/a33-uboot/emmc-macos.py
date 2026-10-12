@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Back up and verify the PF1007L eMMC through the read-only U-Boot `ums` disk (macOS).
+"""Back up and verify the PF1007L eMMC through the read-only U-Boot `ums` disk (macOS or Linux).
 
 Usage (run from the repository root, with sudo):
   sudo python3 -I scripts/a33-uboot/emmc-macos.py backup diskN <exact-bytes>
   sudo python3 -I scripts/a33-uboot/emmc-macos.py verify diskN <exact-bytes>
   sudo python3 -I scripts/a33-uboot/emmc-macos.py verify-original diskN <exact-bytes>
 
-<exact-bytes> is the eMMC size from `diskutil info diskN` (Disk Size, in bytes). It
+<exact-bytes> is the eMMC size from `diskutil info diskN` (Disk Size, in bytes); on Linux
+pass the whole disk (e.g. sdb) and its size from `lsblk -b`. It
 guards against a disk number that changed after a replug. Both modes refuse a disk
 that macOS reports as writable: only the read-only U-Boot build should be running.
 
@@ -45,7 +46,28 @@ def fail(message):
     sys.exit(f"STOP: {message}")
 
 
+def open_disk_linux(identifier, expected_size):
+    if not re.fullmatch(r"sd[a-z]+", identifier):
+        fail("pass a whole disk like sdb, not a partition")
+    sys_block = Path("/sys/block") / identifier
+    model = (sys_block / "device/model").read_text().strip()
+    if not re.fullmatch(r"UMS disk \d+", model):
+        fail(f"unexpected model {model!r}; expected U-Boot's 'UMS disk N'")
+    size = int((sys_block / "size").read_text()) * SECTOR
+    if size != expected_size:
+        fail(f"size {size} != expected {expected_size}")
+    if "/usb" not in str(sys_block.resolve()):
+        fail("not a USB disk")
+    if (sys_block / "ro").read_text().strip() != "1":
+        fail("disk is writable; the read-only U-Boot build is not the one running")
+    if re.search(rf"^/dev/{identifier}\d* ", Path("/proc/mounts").read_text(), re.M):
+        fail(f"unmount every partition of {identifier} first")
+    return f"/dev/{identifier}"
+
+
 def open_disk(identifier, expected_size):
+    if sys.platform == "linux":
+        return open_disk_linux(identifier, expected_size)
     if not re.fullmatch(r"disk\d+", identifier):
         fail("pass a whole disk like disk4, not a partition")
     info = plistlib.loads(subprocess.check_output(["diskutil", "info", "-plist", identifier]))
