@@ -470,6 +470,148 @@ was obtained. Extra swap was not indicated by this workload. First reduce
 background apps, image dimensions, animated effects and hidden-view work, then
 measure again; do not assume the Rockchip swap prescription applies.
 
+## 9. Harden after setup
+
+Tested on one USB-C-only PF1007L on 2026-10-12 (firmware `…PF1007L-V10-1680.0.20260529`,
+the tested boot image), after section 8 of [aimor-remote-root-shell.md](aimor-remote-root-shell.md),
+WebView 106 and the kiosk. Do this before the frame joins Wi-Fi. Root ADB over USB keeps working
+after every step: `adbd` runs as root and does not use `su`.
+
+What the stock firmware exposes:
+
+| Finding | Check |
+| --- | --- |
+| SELinux is off from boot, not just permissive | `getenforce` prints `Disabled`; `/proc/cmdline` has `androidboot.selinux=disabled` |
+| Any app can run `su` and get root silently | `ls -l /system/xbin/su` shows `-rwsr-sr-x root shell` |
+| The connectivity check goes to a vendor server | `settings get global captive_portal_server` prints `status.eqoe.cn` |
+| A vendor factory GL test is a privileged app | `com.android.gl2jni` in `/system/priv-app/tomas/` |
+| Disabling vendor apps does not survive a factory reset | The disabled state is in `/data`; a reset from Settings re-enables AiMOR |
+| Any app can set `service.*`/`debug.*` properties and stop or start init services | See "Any app can control init" below |
+| A boot script opens `/system/media` to everyone | `/system/bin/preinstall.sh` runs as root at every boot and does `chmod 0777 /system/media`; `ls -ld /system/media` shows `drwxrwxrwx` |
+| Three memory tools are setuid root | `/system/xbin/procmem`, `procrank`, `librank` are `-rwsr-sr-x root root` |
+| A vendor ID file on shared storage | `/sdcard/vuid.txt` and an `/sdcard/aimor/` folder |
+| A Wi-Fi network may already be saved | `grep -c 'network=' /data/misc/wifi/wpa_supplicant.conf` |
+
+There were no listening network ports (`netstat -lntu`, apart from `adbd` on 127.0.0.1), no
+navigation bar and no Home key, so the Home app is the only way out by touch.
+
+1. Make `su` root-only. Record the old mode first; the undo is `chmod 6755`.
+
+   ```sh
+   adb -d shell 'mount -o remount,rw /system && chmod 0700 /system/xbin/su; sync; mount -o remount,ro /system'
+   adb -d shell ls -l /system/xbin/su    # -rwx------ root shell
+   ```
+
+2. Turn off the connectivity check, so joining Wi-Fi contacts nobody. Once a LAN time server
+   exists, also point NTP at it: `settings put global ntp_server <lan-ip>`.
+
+   ```sh
+   adb -d shell settings put global captive_portal_detection_enabled 0
+   adb -d shell settings delete global captive_portal_server
+   ```
+
+3. Disable apps a wall-mounted kiosk does not use. Each one is undone with `pm enable <package>`.
+
+   ```sh
+   adb -d shell 'for p in com.android.gl2jni jp.co.omronsoft.openwnn com.svox.pico \
+     com.android.smspush com.android.mms.service com.android.captiveportallogin \
+     com.android.statementservice com.android.managedprovisioning com.android.location.fused \
+     com.android.pacprocessor com.android.proxyhandler com.android.vpndialogs \
+     com.android.providers.calendar com.android.backupconfirm com.android.sharedstoragebackup \
+     com.android.htmlviewer; do pm disable $p; done'
+   ```
+
+   Keep Settings, `SettingsProvider`, `Shell` (ADB), `PackageInstaller`, `DefaultContainerService`
+   (installs), the media and storage providers, `DocumentsUI`, `KeyChain`, `CertInstaller`,
+   `InputDevices`, `DownloadProvider`, WebView, and the LatinIME keyboard (needed to type a
+   Wi-Fi password). `rild` and `sayeye` still run as native services; neither opens a port.
+
+4. Move the vendor apps out of `/system/priv-app`, so a factory reset cannot bring AiMOR back.
+   First copy the three directories to the host and compare each file, as for WebView in
+   section 6. Keep that copy private; do not commit or publish it.
+
+   ```sh
+   adb -d shell 'set -e; mount -o remount,rw /system
+     mkdir /system/homehq-disabled-vendor; chmod 0700 /system/homehq-disabled-vendor
+     for d in launcher_aimor frame_ota DeviceTest; do mv /system/priv-app/$d /system/homehq-disabled-vendor/; done
+     sync; mount -o remount,ro /system'
+   ```
+
+   On the next framework start, `PackageManager` logs `System package … no longer exists; wiping
+   its data` for each, and `pm path com.efercro.os.aimor` prints nothing. Undo: move the three
+   directories back to `/system/priv-app` and restart. AiMOR's old data is gone.
+
+5. Stop the boot script and close the other permission holes. `preinstall.sh` checks for
+   `/data/system.preinstall` but creates a different file, so it runs at every boot. The tar files it
+   extracts do not exist. Undo: `rm /data/system.preinstall`, then `chmod 0777 /system/media` and
+   `chmod 6755` on the three tools, inside the same remount.
+
+   ```sh
+   adb -d shell 'set -e; touch /data/system.preinstall; chmod 0600 /data/system.preinstall
+     mount -o remount,rw /system; chmod 0755 /system/media
+     chmod 0755 /system/xbin/procmem /system/xbin/procrank /system/xbin/librank
+     sync; mount -o remount,ro /system'
+   ```
+
+6. Copy `/sdcard/vuid.txt` and `/sdcard/aimor` to a private folder on the host, then delete them
+   from the frame: `adb -d shell rm -r /sdcard/vuid.txt /sdcard/aimor`.
+
+7. If `wpa_supplicant.conf` has a `network={` block you did not add, copy the file to the host,
+   then rewrite it without the block and empty `networkHistory.txt`. Writing with `cat … >` keeps
+   the file's owner and mode (`wifi:wifi 0660`). Do this with Wi-Fi off. Undo: write the copy back.
+
+   ```sh
+   sed '/^network={/,$d' wpa_supplicant.conf > wpa_new.conf     # on the host, from the copy
+   adb -d push wpa_new.conf /data/local/tmp/
+   adb -d shell 'cat /data/local/tmp/wpa_new.conf > /data/misc/wifi/wpa_supplicant.conf
+     rm /data/local/tmp/wpa_new.conf; > /data/misc/wifi/networkHistory.txt; sync'
+   ```
+
+8. Restart the framework with `adb -d shell stop; adb -d shell start` (`adb reboot` can hang on
+   these units), then check: Home still shows, no app crashes in `logcat`, and
+   `netstat -lntu` lists no ports other than 127.0.0.1.
+
+A factory reset from Settings re-enables the packages from step 3, restores the vendor
+connectivity-check server (it is the `SettingsProvider` default), removes the kiosk and launcher,
+and deletes the guard file from step 5. Run this section again after any reset. Steps 1 and 4 and
+the WebView swap survive, because they are on `/system`.
+
+### Any app can control init
+
+With SELinux disabled, Android 6's property service only checks the property prefix against the
+caller's uid. That stops nothing that matters here. Tested on 2026-10-12, running as a normal app
+uid (`su 10022`, the launcher's uid):
+
+- `setprop debug.homehq.proptest app` and `setprop service.homehq.test 1` worked.
+- `setprop ctl.stop perfprofd` stopped a root service (`init.svc.perfprofd` went from `running` to
+  `stopped`; it was started again as root afterwards).
+
+So native code in any app, for example after a WebView exploit, can very likely run
+`setprop service.adb.tcp.port 5555` and `setprop ctl.restart adbd`. `adbd` reads that property,
+runs as root and has `ro.adb.secure=0`, so the result is root ADB with no authentication, on the
+network and on 127.0.0.1. This last step was not run, because it drops the ADB session. Android 6
+init can also pass arguments to a root service through `ctl.start <service>:<args>` (not tested
+here), which may give other routes to root. Firewall rules on the frame would close the `adbd`
+route but not those.
+
+The only full fix is SELinux in enforcing mode, which is untested on this firmware. Until then,
+treat any code that runs on the frame as root:
+
+- Only install apps you trust. The kiosk should load only your own server's pages.
+- Put the frame on a separate network segment with no internet access. Allow only the dashboard
+  server's address and port, and block every other device from connecting to the frame. A rule on
+  the same subnet cannot do this, because traffic between hosts on one subnet never reaches the
+  router.
+
+`adbd` also listens on 127.0.0.1:5037. In testing, connecting to it from the frame restarted the
+ADB server on the connected computer, so it appears to lead back to the host. This only matters
+while the frame is connected to a computer over USB.
+
+Still open after these steps: anyone with a USB cable gets a root shell (this is also the
+recovery path), the 2016 security patch level and the Linux 3.4 kernel, SELinux remains off,
+and the trust store dates from 2016 (it lacks ISRG Root X1 and still has WoSign, StartCom and CNNIC).
+Block the frame from the internet on the router, and limit the kiosk to your own dashboard's address.
+
 ## Undo and hand-off
 
 - Re-enable vendor apps with `pm enable com.efercro.os.aimor` and
@@ -479,11 +621,14 @@ measure again; do not assume the Rockchip swap prescription applies.
 - Restore the original animator setting; if originally unset, use
   `settings delete global animator_duration_scale`.
 - Restore the whole original WebView tree using section 6, not just its APK.
+- Undo section 9: `chmod 6755 /system/xbin/su`, `pm enable` each disabled package, move the
+  vendor directories back from `/system/homehq-disabled-vendor`, follow the undo in steps 5 to 7, and
+  `settings put global captive_portal_server status.eqoe.cn` if you want the stock check back.
 - Uninstall newly added apps only after a working Home launcher is restored.
 - `adb -d reverse --remove tcp:4173` removes the USB dashboard mapping.
 - Keep verified boot/system backups and the FEL card private and available.
   Restoring a boot patch requires the same board-specific, bounded storage writer;
   `sunxi-fel` alone does not provide an eMMC restore command.
 
-This setup does not update Android, remove the root exposure, configure automatic
+This setup does not update Android, configure automatic
 startup, or integrate real calendar data. Those are separate tasks.

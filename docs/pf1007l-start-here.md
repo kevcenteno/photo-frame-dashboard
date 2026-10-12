@@ -274,8 +274,9 @@ adb shell 'netstat -an | grep :7806'
 
 ### Then set it up
 
-Continue with sections 4 to 8 of the [PF1007L guide](allwinner-a33-pf1007l.md#4-back-up-before-modifying-android):
-launcher, WebView 106, kiosk and memory. Known differences on these units, from
+Continue with sections 4 to 9 of the [PF1007L guide](allwinner-a33-pf1007l.md#4-back-up-before-modifying-android):
+launcher, WebView 106, kiosk, memory and [hardening](allwinner-a33-pf1007l.md#9-harden-after-setup).
+Do the hardening before the frame joins Wi-Fi: on stock firmware any app can get root through `su`. Known differences on these units, from
 [section 8 of the U-Boot guide](allwinner-a33-mainline-uboot.md#8-notes-from-this-unit-after-root):
 
 - No SystemUI: no status bar or navigation bar. `qemu.hw.mainkeys` does nothing.

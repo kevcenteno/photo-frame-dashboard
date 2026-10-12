@@ -148,6 +148,8 @@ Do these steps in sequence.
    Each disabled package must show `enabled="2"`.
 7. After the reboot, do the check in section 7 again.
    The command must show no connection to port 7806.
+8. A factory reset re-enables these packages. To remove them for good, and to close the
+   world-usable `su`, follow [section 9 of the PF1007L guide](allwinner-a33-pf1007l.md#9-harden-after-setup).
 
 ## 9. Undo
 
