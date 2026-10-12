@@ -122,6 +122,39 @@ The partition layout matched the tested unit in the PF1007L guide: env at sector
 **boot at 172032**, system (1 GiB ext4) at 237568, **recovery at 2400256**. Parse your own.
 `UDISK` (p1) is listed past the end of the eMMC, as the PF1007L guide notes.
 
+### Only the SD card appears: the `nohs` build
+
+On one USB-C unit (firmware `…20260529`, Samsung eMMC with CID name `AG2GC`, Linux host),
+the default build showed only one disk after about 45 s: the SD card. The eMMC never appeared.
+An MMC command trace from U-Boot showed why. The eMMC identified itself, returned its EXT_CSD
+and accepted the 4-bit bus switch. Then it stopped answering after the CMD6 `HS_TIMING`
+switch (`03b90100`), and every later command timed out: `unable to select a mode: -110`.
+The 4-bit, 26 MHz and no-PMIC settings from upstream #16 alone did not help, because the
+sunxi driver always turns on the high-speed modes.
+
+[`pf1007l-uboot-nohs.patch`](../scripts/a33-uboot/pf1007l-uboot-nohs.patch) adds a variant on
+top of the default patch:
+
+- a `pf1007l,no-mmc-hs` device-tree flag that makes `sunxi_mmc` drop the high-speed modes;
+- `sun8i-a33-pf1007l-backup-nohs.dts`: eMMC at 4-bit, 26 MHz, with that flag;
+- `pf1007l_backup_nohs_defconfig`: `SUNXI_NO_PMIC` and the CPU at 408 MHz, as in #16;
+- no CTRL+C abort in `ums`, as in #16.
+
+```sh
+scripts/a33-uboot/build-uboot.sh nohs    # output: diagnostics/a33-uboot-nohs-out/
+```
+
+Use the same `sunxi-fel` commands with that directory. With it, the eMMC came up in about
+25 s as a second read-only disk. The backup ran at about 6.6 MB/s (two passes, about 80
+minutes). The guarded boot write and the `verify` pass also worked. On Linux, run the
+backup from upstream #13's `emmc-macos.py` with the whole disk (`sdb`) and its `lsblk -b` size.
+
+The binary used on that unit was this variant built with extra diagnostics (console
+recording, FAT write and a command to save the console log to the SD card). The patch
+leaves those out. This exact build has not been run on a frame yet.
+
+Use the default build first. It is faster on the units where it works.
+
 ## 5. Build the boot patch from your own backup
 
 ```sh

@@ -1,0 +1,92 @@
+diff --git a/arch/arm/dts/Makefile b/arch/arm/dts/Makefile
+index 857c9a52..8c9875b6 100644
+--- a/arch/arm/dts/Makefile
++++ b/arch/arm/dts/Makefile
+@@ -609,6 +609,7 @@ dtb-$(CONFIG_MACH_SUN8I_A33) += \
+ 	sun8i-a33-olinuxino.dtb \
+ 	sun8i-a33-q8-tablet.dtb \
+ 	sun8i-a33-pf1007l-backup.dtb \
++	sun8i-a33-pf1007l-backup-nohs.dtb \
+ 	sun8i-a33-sinlinx-sina33.dtb \
+ 	sun8i-r16-bananapi-m2m.dtb \
+ 	sun8i-r16-nintendo-nes-classic.dtb \
+diff --git a/arch/arm/dts/sun8i-a33-pf1007l-backup-nohs.dts b/arch/arm/dts/sun8i-a33-pf1007l-backup-nohs.dts
+new file mode 100644
+index 00000000..b1894e14
+--- /dev/null
++++ b/arch/arm/dts/sun8i-a33-pf1007l-backup-nohs.dts
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
++/*
++ * PF1007L backup build for units whose eMMC stops answering after the
++ * high-speed timing switch (seen on a Samsung eMMC with CID name "AG2GC"):
++ * eMMC at 4-bit, 26 MHz, legacy timing only.
++ */
++
++#include "sun8i-a33-pf1007l-backup.dts"
++
++/ {
++	model = "PF1007L backup, eMMC without high-speed timing (Q8 A33 base)";
++};
++
++&mmc2 {
++	bus-width = <4>;
++	max-frequency = <26000000>;
++	pf1007l,no-mmc-hs;
++};
+diff --git a/configs/pf1007l_backup_nohs_defconfig b/configs/pf1007l_backup_nohs_defconfig
+new file mode 100644
+index 00000000..7c9ddb3e
+--- /dev/null
++++ b/configs/pf1007l_backup_nohs_defconfig
+@@ -0,0 +1,17 @@
++CONFIG_ARM=y
++CONFIG_ARCH_SUNXI=y
++CONFIG_DEFAULT_DEVICE_TREE="sun8i-a33-pf1007l-backup-nohs"
++CONFIG_SPL=y
++CONFIG_MACH_SUN8I_A33=y
++CONFIG_DRAM_CLK=456
++CONFIG_DRAM_ZQ=15291
++CONFIG_MMC_SUNXI_SLOT_EXTRA=2
++# CONFIG_VIDEO_SUNXI is not set
++# CONFIG_SYS_MALLOC_CLEAR_ON_INIT is not set
++CONFIG_CONS_INDEX=5
++CONFIG_BOOTDELAY=-2
++CONFIG_USB_MUSB_GADGET=y
++CONFIG_CMD_USB_MASS_STORAGE=y
++CONFIG_CRC32_VERIFY=y
++CONFIG_SUNXI_NO_PMIC=y
++CONFIG_SYS_CLK_FREQ=408000000
+diff --git a/drivers/mmc/sunxi_mmc.c b/drivers/mmc/sunxi_mmc.c
+index e28c81af..375ef5a1 100644
+--- a/drivers/mmc/sunxi_mmc.c
++++ b/drivers/mmc/sunxi_mmc.c
+@@ -697,6 +697,13 @@ static int sunxi_mmc_probe(struct udevice *dev)
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * The driver always enables MMC_MODE_HS/HS_52MHz. Some PF1007L eMMCs stop
++	 * answering after the CMD6 HS_TIMING switch, so let the device tree drop them.
++	 */
++	if (dev_read_bool(dev, "pf1007l,no-mmc-hs"))
++		cfg->host_caps &= ~(MMC_MODE_HS_52MHz | MMC_MODE_HS);
++
+ 	priv->reg = dev_read_addr_ptr(dev);
+ 
+ 	/* We don't have a sunxi clock driver so find the clock address here */
+diff --git a/drivers/usb/gadget/f_mass_storage.c b/drivers/usb/gadget/f_mass_storage.c
+index d76ab970..67dce9fa 100644
+--- a/drivers/usb/gadget/f_mass_storage.c
++++ b/drivers/usb/gadget/f_mass_storage.c
+@@ -668,10 +668,6 @@ static int sleep_thread(struct fsg_common *common)
+ 			if (common->eject)
+ 				return -EPIPE;
+ 
+-			/* Handle CTRL+C */
+-			if (ctrlc())
+-				return -EPIPE;
+-
+ 			/* Check cable connection */
+ 			if (!g_dnl_board_usb_cable_connected())
+ 				return -EIO;
